@@ -1,0 +1,8 @@
+# Ignorar el ejecutable compilado de nuestra shell
+mi_shell
+
+# Ignorar archivos temporales del sistema de Mac
+.DS_Store
+
+# Ignorar la carpeta de configuración local de VS Code (si existe)
+.vscode/
