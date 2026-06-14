@@ -55,6 +55,10 @@ int main(void) {
         args[i] = NULL;
 
         // 2. Comando interno: cd (¡LA SOLUCIÓN!)
+        /* cd no puede ejecutarse igual que ls, echo o cat, porque cd tiene que cambiar 
+        el directorio de trabajo de la propia shell. Por eso se ejecuta en el proceso 
+        padre y se evita hacer fork() */
+        
         if (strcmp(args[0], "cd") == 0) {
             // Si el usuario escribe solo 'cd', por ahora le avisamos
             if (args[1] == NULL) {
