@@ -17,122 +17,137 @@ en vez de imrpimir hola en pantalla, lo guarda en el archivo salida.txt
 #define MAX_LINE 80
 #define MAX_ARGS 10
 
+// Función auxiliar para parsear un comando simple (separa por espacios)
+void parsear_comando(char *linea, char **args) {
+    int i = 0;
+    char *token = strtok(linea, " ");
+    while (token != NULL && i < MAX_ARGS - 1) {
+        args[i] = token;
+        i++;
+        token = strtok(NULL, " ");
+    }
+    args[i] = NULL;
+}
+
 int main(void) {
-    char *args[MAX_ARGS];
     char linea[MAX_LINE];
     int ejecucion = 1;
-    char ruta_actual[1024]; // Se guarda la ruta actual de la shell
+    char ruta_actual[1024];
 
     while (ejecucion) {
-        // prompt con carpeta actual
         if (getcwd(ruta_actual, sizeof(ruta_actual)) != NULL) {
             char *ultima_carpeta = strrchr(ruta_actual, '/');
-            if (ultima_carpeta != NULL) {
-                printf("mi_shell [%s]> ", ultima_carpeta + 1);
-            } else {
-                printf("mi_shell [%s]> ", ruta_actual);
-            }
+            printf("mi_shell [%s]> ", ultima_carpeta ? ultima_carpeta + 1 : ruta_actual);
         } else {
             printf("mi_shell> ");
         }
         fflush(stdout);
 
-        if (fgets(linea, MAX_LINE, stdin) == NULL) {
-            break;
-        }
-
+        if (fgets(linea, MAX_LINE, stdin) == NULL) break;
         linea[strcspn(linea, "\n")] = 0;
+        if (strlen(linea) == 0) continue;
+        if (strcmp(linea, "exit") == 0) { ejecucion = 0; continue; }
 
-        if (strlen(linea) == 0) {
-            continue;
+        // --- DETECTAR SI HAY PIPE (|) ---
+        char *parte_izquierda = NULL;
+        char *parte_derecha = NULL;
+        int hay_pipe = 0;
+
+        char *pos_pipe = strchr(linea, '|');
+        if (pos_pipe != NULL) {
+            hay_pipe = 1;
+            *pos_pipe = '\0'; // Cortamos la string original en dos partes
+            parte_izquierda = linea;
+            parte_derecha = pos_pipe + 1;
         }
 
-        if (strcmp(linea, "exit") == 0) {
-            ejecucion = 0;
-            continue;
-        }
+        // Si NO hay pipe, ejecutamos el flujo normal de un solo comando
+        if (!hay_pipe) {
+            char *args[MAX_ARGS];
+            parsear_comando(linea, args);
 
-        // Parsear la línea
-        int i = 0;
-        char *token = strtok(linea, " ");
-        while (token != NULL && i < MAX_ARGS - 1) {
-            args[i] = token;
-            i++;
-            token = strtok(NULL, " ");
-        }
-        args[i] = NULL;
+            // Comando interno: cd
+            if (strcmp(args[0], "cd") == 0) {
+                if (args[1] == NULL) fprintf(stderr, "mi_shell: argumento esperado\n");
+                else if (chdir(args[1]) != 0) perror("mi_shell");
+                continue;
+            }
 
-        // Comando interno: cd
-        if (strcmp(args[0], "cd") == 0) {
-            if (args[1] == NULL) {
-                fprintf(stderr, "mi_shell: se esperaba un argumento para \"cd\"\n");
-            } else {
-                if (chdir(args[1]) != 0) {
-                    perror("mi_shell");
+            // Redirección simple (>)
+            char *archivo_salida = NULL;
+            int redirigir = 0;
+            for (int j = 0; args[j] != NULL; j++) {
+                if (strcmp(args[j], ">") == 0) {
+                    if (args[j + 1] != NULL) {
+                        archivo_salida = args[j + 1];
+                        args[j] = NULL;
+                        redirigir = 1;
+                    }
+                    break;
                 }
             }
-            continue;
-        }
 
-        // --- DETECTAR REDIRECCIÓN (>) ---
-        char *archivo_salida = NULL;
-        int redirigir = 0;
-
-        for (int j = 0; args[j] != NULL; j++) {
-            if (strcmp(args[j], ">") == 0) {
-                if (args[j + 1] != NULL) {
-                    archivo_salida = args[j + 1]; // El siguiente argumento es el archivo
-                    args[j] = NULL; // Cortamos los argumentos ahí para que execvp no vea el '>'
-                    redirigir = 1;
-                } else {
-                    fprintf(stderr, "mi_shell: error de sintaxis cerca del elemento inesperado '>'\n");
+            pid_t pid = fork();
+            if (pid == 0) {
+                if (redirigir) {
+                    int fd = open(archivo_salida, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
                 }
-                break;
-            }
-        }
-
-        // Comandos externos (Fork)
-        pid_t pid = fork();
-
-        if (pid < 0) {
-            fprintf(stderr, "Fork failed\n");
-            return 1;
-        } 
-        else if (pid == 0) {
-            // --- ESTAMOS EN EL PROCESO HIJO ---
-            if (redirigir) {
-                // Abrimos el archivo. Si no existe, lo crea (O_CREAT). Si existe, lo vacía (O_TRUNC).
-                // Con permisos de escritura (O_WRONLY) e introduciendo permisos estándar (0644).
-                int fd = open(archivo_salida, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                /* open() abre un archivo y devuelve un descriptor de archivo
-                echo hola > salida.txt sobrescribe salida.txt. No añade al final, lo remplaza 
-                El 0644 son permisos del archivo. Es decir rw-r--r-- (read & write, read, read) */
-
-                if (fd < 0) {
-                    perror("mi_shell: error al abrir el archivo de salida");
+                if (execvp(args[0], args) < 0) {
+                    printf("mi_shell: comando no encontrado: %s\n", args[0]);
                     exit(1);
                 }
-                // Duplicamos el descriptor del archivo en el canal 1 (stdout)
-                dup2(fd, STDOUT_FILENO);
-                // Aquí hace que el descriptor 1, que es stdout, apunte al archivo.
-                close(fd); // Ya no necesitamos el descriptor original abierto
             }
-
-            if (execvp(args[0], args) < 0) {
-                fprintf(stderr, "mi_shell: comando no encontrado: %s\n", args[0]);
-                exit(1);
-            }
+            wait(NULL);
         } 
         else {
+            // --- FLUJO CON PIPE (|) ---
+            char *args1[MAX_ARGS];
+            char *args2[MAX_ARGS];
+            parsear_comando(parte_izquierda, args1);
+            parsear_comando(parte_derecha, args2);
+
+            int pipefd[2];
+            if (pipe(pipefd) < 0) {
+                perror("mi_shell: falló el pipe");
+                continue;
+            }
+
+            // Fork para el PRIMER comando (escribe en el pipe)
+            if (fork() == 0) {
+                dup2(pipefd[1], STDOUT_FILENO); // Redirige stdout al tubo de escritura
+                close(pipefd[0]); // El primer hijo no lee, cerramos lectura
+                close(pipefd[1]); // Cerramos el original
+                execvp(args1[0], args1);
+                perror("mi_shell");
+                exit(1);
+            }
+
+            // Fork para el SEGUNDO comando (lee del pipe)
+            if (fork() == 0) {
+                dup2(pipefd[0], STDIN_FILENO); // Redirige stdin al tubo de lectura
+                close(pipefd[1]); // El segundo hijo no escribe, cerramos escritura
+                close(pipefd[0]); // Cerramos el original
+                execvp(args2[0], args2);
+                perror("mi_shell");
+                exit(1);
+            }
+
+            // El proceso padre (la shell) cierra ambos extremos para no bloquearse
+            close(pipefd[0]);
+            close(pipefd[1]);
+
+            // Espera a que terminen ambos hijos
+            wait(NULL);
             wait(NULL);
         }
     }
-    
     printf("Saliendo de mi_shell. ¡Hasta luego!\n");
     return 0;
 }
 
-/* Flujo de ejemplo:
+/* Flujo de ejemplo de redireccion de salida:
 Comando --> echo hola > saludo.txt
 Pasa esto:
 1. La shell lee la línea.
@@ -163,4 +178,35 @@ Pasa esto:
 
 9. El archivo saludo.txt contiene:
    hola
+*/
+
+/* Ejemplo de comando: ls | grep txt
+1. La shell lee: "ls | grep txt"
+2. Encuentra "|"
+3. Parte la línea:
+   izquierda: "ls "
+   derecha: " grep txt"
+
+4. Parseo:
+   args1 = ["ls", NULL]
+   args2 = ["grep", "txt", NULL]
+
+5. Crea un pipe:
+   pipefd[0] = lectura
+   pipefd[1] = escritura
+
+6. Crea el primer hijo:
+   stdout de ls -> pipefd[1]
+   ejecuta ls
+
+7. Crea el segundo hijo:
+   stdin de grep <- pipefd[0]
+   ejecuta grep txt
+
+8. El padre cierra ambos extremos del pipe
+
+9. El padre espera a ambos hijos
+
+10. Resultado:
+   grep muestra en pantalla solo las líneas de ls que contienen "txt"
 */
